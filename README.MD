@@ -89,6 +89,6 @@ Get-Content $env:TEMP\plcnext_open.log -Tail 20
 
 ## Для детальной отладки используйте параметр -Verbose:
 
-``powershell
+```powershell
 .\PLCnext_AutoLauncher.ps1 -ProjectPath "project.pcwef" -Verbose
 ```
