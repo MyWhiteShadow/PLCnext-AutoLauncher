@@ -54,7 +54,9 @@
 Скопируйте скрипт в папку C:\Scripts\ (создайте при необходимости) и выполните:
 
 ```powershell
+notepad $PROFILE
 Set-Alias PLCnext_AutoLauncher "C:\Scripts\PLCnext_AutoLauncher.ps1"
+. $PROFILE
 ```
 
 # Запуск из любой директории
