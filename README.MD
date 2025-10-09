@@ -54,6 +54,9 @@
 Скопируйте скрипт в папку C:\Scripts\ (создайте при необходимости) и выполните:
 
 ```powershell
+if (!(Test-Path -Path $PROFILE)) {
+    New-Item -ItemType File -Path $PROFILE -Force
+}
 notepad $PROFILE
 Set-Alias PLCnext_AutoLauncher "C:\Scripts\PLCnext_AutoLauncher.ps1"
 . $PROFILE
