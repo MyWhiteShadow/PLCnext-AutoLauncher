@@ -62,6 +62,11 @@ Set-Alias PLCnext_AutoLauncher "C:\Scripts\PLCnext_AutoLauncher.ps1"
 . $PROFILE
 ```
 
+# перед использованием нужно импортировать подпись скрипта
+```powerShell
+Import-Certificate -FilePath ".\CodeSigning.cer" -CertStoreLocation "Cert:\CurrentUser\Root"
+```
+
 # Запуск из любой директории
 ```powershell
 PLCnext_AutoLauncher "D:\Work\MyProject.pcwef"
