@@ -78,7 +78,6 @@ function Get-VersionFromAdditionalXml {
             $XmlDoc = New-Object System.Xml.XmlDocument
             $XmlDoc.LoadXml($XmlContent)
             
-            # Ищем ProductVersion
             $ProductVersionNode = $XmlDoc.SelectSingleNode("//Property[@Key='ProductVersion']")
             if ($ProductVersionNode -and $ProductVersionNode.Attributes["Value"]) {
                 $Version = $ProductVersionNode.Attributes["Value"].Value
@@ -125,7 +124,6 @@ function Test-PLCnextProject {
         return $false
     }
     
-    # Проверяем разные типы проектов
     $Ext = [System.IO.Path]::GetExtension($ProjectPath).ToLower()
     
     if ($Ext -eq ".pcwex") {
@@ -155,8 +153,7 @@ function Test-PLCnextProject {
     }
     elseif ($Ext -eq ".pcwef") {
         Write-Log "Testing .pcwef launcher file"
-        # .pcwef файлы обычно маленькие, содержат ссылку на flat папку
-        if ((Get-Item $ProjectPath).Length -lt 102400) { # меньше 100KB
+        if ((Get-Item $ProjectPath).Length -lt 102400) {
             Write-Log ".pcwef file size looks correct"
             return $true
         } else {
@@ -165,7 +162,6 @@ function Test-PLCnextProject {
         }
     }
     else {
-        # Flat project folder
         Write-Log "Testing flat project structure"
         $KeyFiles = @("Solution.xml", "Project.xml", "Project.pcwg")
         $KeyFolders = @("content", "_properties", "components")
@@ -187,6 +183,48 @@ function Test-PLCnextProject {
         Write-Log "No PLCnext project structure found"
         return $false
     }
+}
+
+# === НОВАЯ ФУНКЦИЯ: Определение версии по запущенному процессу ===
+function Get-RunningIDEVersion {
+    $Processes = Get-Process | Where-Object { $_.Name -match 'PLCNENG64|PLCnextEngineer' } | Select-Object Name, Path, Id -ErrorAction SilentlyContinue
+    $RunningVersions = @{}
+
+    foreach ($Proc in $Processes) {
+        if ($Proc.Path) {
+            $Dir = Split-Path $Proc.Path -Parent
+            $FolderName = Split-Path $Dir -Leaf
+            $Ver = Extract-VersionFromFolder $FolderName
+            if ($Ver) {
+                $RunningVersions[$Ver] = @{
+                    Path = $Proc.Path
+                    PID = $Proc.Id
+                    Process = $Proc
+                }
+                Write-Log "Detected running IDE v$Ver at $($Proc.Path) (PID: $($Proc.Id))"
+            }
+        }
+    }
+    return $RunningVersions
+}
+
+# === НОВАЯ ФУНКЦИЯ: Закрытие всех экземпляров IDE ===
+function Stop-AllIDE {
+    Write-Log "Closing all running PLCnext Engineer instances..."
+    $Processes = Get-Process | Where-Object { $_.Name -match 'PLCNENG64|PLCnextEngineer' } -ErrorAction SilentlyContinue
+    foreach ($Proc in $Processes) {
+        try {
+            Write-Log "Terminating PID $($Proc.Id) ($($Proc.Path))"
+            $Proc.CloseMainWindow() | Out-Null
+            if (!$Proc.WaitForExit(10000)) {
+                Write-Log "Force killing PID $($Proc.Id)"
+                $Proc.Kill()
+            }
+        } catch {
+            Write-Log "Failed to close PID $($Proc.Id): $($_.Exception.Message)"
+        }
+    }
+    Start-Sleep -Seconds 3
 }
 
 # ---------------- Инициализация ----------------
@@ -222,17 +260,10 @@ if (-not $ProjectValid) {
 # ---------------- Обработка .pcwex ----------------
 if ($IsPcwexArchive) {
     Write-Log "Detected .pcwex archive project"
-    
-    # Для .pcwex ВСЕГДА открываем исходный архив, а не распакованную версию
-    # Но нам нужно извлечь версию для выбора правильной IDE
-    
-    Write-Log "Extracting version information from .pcwex archive..."
     $Version = Get-VersionFromPcwex -PcwexPath $ProjectPath
     
-    # Если не удалось извлечь версию из архива, распаковываем временно
     if (-not $Version) {
         Write-Log "Could not extract version from archive directly, using temporary extraction"
-        
         $TempExtractDir = Join-Path $env:TEMP ("PLCnextExtract_" + [IO.Path]::GetFileNameWithoutExtension($ProjectPath) + "_" + (Get-Random))
         Write-Log "Temporarily extracting .pcwex to: $TempExtractDir"
         
@@ -240,7 +271,6 @@ if ($IsPcwexArchive) {
             Expand-Archive -Path $ProjectPath -DestinationPath $TempExtractDir -Force
             Write-Log "Temporary extraction completed" 
             
-            # Ищем корневую директорию проекта в распакованных файлах
             $PossibleRoots = @(
                 (Join-Path $TempExtractDir "Project"),
                 (Join-Path $TempExtractDir "project"),
@@ -260,23 +290,17 @@ if ($IsPcwexArchive) {
                 }
             }
             
-            if (-not $ProjectDir) { 
-                $ProjectDir = $TempExtractDir 
-            }
+            if (-not $ProjectDir) { $ProjectDir = $TempExtractDir }
             
-            # Извлекаем версию из распакованных файлов
             $Version = Get-VersionFromAdditionalXml -ProjectDir $ProjectDir
             if (-not $Version) {
                 $Version = Get-VersionFromStorageProperties -ProjectDir $ProjectDir
             }
-            
         } catch { 
             Write-Log ("Error during temporary extraction: " + $_.Exception.Message)
-            # Продолжаем без версии
         }
     }
     
-    # Для .pcwex ВСЕГДА открываем исходный файл
     $LaunchPath = $ProjectPath
     Write-Log "Will open original .pcwex file: $LaunchPath"
 }
@@ -293,7 +317,6 @@ elseif ($IsPcwefLauncher) {
         $ProjectDir = $FlatFolder
         Write-Log "Associated flat folder found: $ProjectDir" 
         
-        # Извлечение версии из flat проекта
         $Version = Get-VersionFromAdditionalXml -ProjectDir $ProjectDir
         if (-not $Version) {
             $Version = Get-VersionFromStorageProperties -ProjectDir $ProjectDir
@@ -309,7 +332,6 @@ elseif ($IsPcwefLauncher) {
                 exit 1 
             }
             
-            # Извлечение версии из указанного flat проекта
             $Version = Get-VersionFromAdditionalXml -ProjectDir $ProjectDir
             if (-not $Version) {
                 $Version = Get-VersionFromStorageProperties -ProjectDir $ProjectDir
@@ -327,7 +349,6 @@ else {
     $ProjectDir = Split-Path -Parent $ProjectPath
     Write-Log "Flat project - launch path: $LaunchPath" 
     
-    # Извлечение версии из flat проекта
     $Version = Get-VersionFromAdditionalXml -ProjectDir $ProjectDir
     if (-not $Version) {
         $Version = Get-VersionFromStorageProperties -ProjectDir $ProjectDir
@@ -374,45 +395,54 @@ if (Test-Path $IDEBase) {
 
 Write-Log "Available IDE versions: $($AvailableVersions.Keys -join ', ')"
 
-# ---------------- Выбор IDE ----------------
-$IDEPath = $null
+# ---------------- Проверка запущенных IDE ----------------
+$RunningIDEs = Get-RunningIDEVersion
+$TargetIDEPath = $null
 
-if ($AvailableVersions.Count -eq 0) {
-    Write-Log "Warning: No PLCnext Engineer installations found in standard location"
-} elseif ($Version -and $AvailableVersions.ContainsKey($Version)) {
-    $IDEPath = $AvailableVersions[$Version]
-    Write-Log "Using exact version match: $Version at $IDEPath"
+if ($Version -and $AvailableVersions.ContainsKey($Version)) {
+    $TargetIDEPath = $AvailableVersions[$Version]
+    Write-Log "Target IDE version: $Version -> $TargetIDEPath"
 } else {
-    # Поиск подходящей версии
     $SortedVersions = $AvailableVersions.Keys | Sort-Object { Get-VersionNumber $_ } -Descending
-    
-    if ($Version) {
-        $ProjectVersion = Get-VersionNumber $Version
-        $HigherMatch = $SortedVersions | Where-Object { (Get-VersionNumber $_) -ge $ProjectVersion } | Select-Object -First 1
-        if ($HigherMatch) { 
-            $IDEPath = $AvailableVersions[$HigherMatch]
-            Write-Log "Using closest higher version: $HigherMatch at $IDEPath"
-        }
-    }
-    
-    # Если не нашли подходящую версию или нет информации о версии проекта
-    if (-not $IDEPath -and $SortedVersions.Count -gt 0) {
+    $ProjectVersion = if ($Version) { Get-VersionNumber $Version } else { [Version]"0.0" }
+    $HigherMatch = $SortedVersions | Where-Object { (Get-VersionNumber $_) -ge $ProjectVersion } | Select-Object -First 1
+    if ($HigherMatch) { 
+        $TargetIDEPath = $AvailableVersions[$HigherMatch]
+        Write-Log "Using closest higher version: $HigherMatch -> $TargetIDEPath"
+    } elseif ($SortedVersions.Count -gt 0) {
         $Latest = $SortedVersions | Select-Object -First 1
-        $IDEPath = $AvailableVersions[$Latest]
-        Write-Log "Using latest available version: $Latest at $IDEPath"
+        $TargetIDEPath = $AvailableVersions[$Latest]
+        Write-Log "Using latest available version: $Latest -> $TargetIDEPath"
     }
 }
 
-if (-not $IDEPath) { 
-    Write-Host "No suitable IDE found automatically. Enter full path to PLCnext Engineer executable:" -ForegroundColor Yellow
-    $IDEPath = Read-Host
-    if (-not (Test-Path $IDEPath)) { 
-        Write-Log "Error: IDE path not found: $IDEPath"
+if (-not $TargetIDEPath) {
+    Write-Host "No suitable IDE found. Enter full path to PLCnext Engineer executable:" -ForegroundColor Yellow
+    $TargetIDEPath = Read-Host
+    if (-not (Test-Path $TargetIDEPath)) { 
+        Write-Log "Error: IDE path not found: $TargetIDEPath"
         exit 1 
     }
 }
 
-Write-Log "Final IDE path: $IDEPath"
+# === ЛОГИКА УПРАВЛЕНИЯ ЗАПУЩЕННЫМИ IDE ===
+if ($RunningIDEs.Count -gt 0) {
+    $TargetVersion = Extract-VersionFromFolder (Split-Path (Split-Path $TargetIDEPath -Parent) -Leaf)
+
+    if ($RunningIDEs.ContainsKey($TargetVersion)) {
+        Write-Log "Correct IDE version $TargetVersion is already running. Opening project in existing instance."
+        $IDEPath = $RunningIDEs[$TargetVersion].Path
+    } else {
+        Write-Log "Wrong IDE version running. Closing all instances and starting correct one: $TargetVersion"
+        Stop-AllIDE
+        $IDEPath = $TargetIDEPath
+    }
+} else {
+    Write-Log "No IDE running. Starting required version: $TargetIDEPath"
+    $IDEPath = $TargetIDEPath
+}
+
+Write-Log "Final IDE to use: $IDEPath"
 
 # ---------------- Запуск ----------------
 try {
@@ -422,86 +452,35 @@ try {
     Write-Log "Launching IDE ($AbsIDEPath) with project: $AbsLaunchPath"
     Write-Log "Working directory: $WorkingDir"
     
-    # Формируем полную команду запуска для логирования
     $LaunchCommand = "`"$AbsIDEPath`" `"$AbsLaunchPath`""
     Write-Log "EXECUTE COMMAND: $LaunchCommand"
-    Write-Log "WORKING DIRECTORY: $WorkingDir"
     
-    # Пробуем разные методы открытия проекта
-    $Success = $false
-    
-    # Метод 1: Прямое открытие файла
-    Write-Log "Attempt 1: Direct file opening"
     $Process = Start-Process -FilePath $AbsIDEPath -ArgumentList "`"$AbsLaunchPath`"" -WorkingDirectory $WorkingDir -PassThru
-    
-    Start-Sleep -Seconds 5
+    Start-Sleep -Seconds 3
     
     if ($Process.HasExited) {
-        $ExitCode = $Process.ExitCode
-        Write-Log "IDE exited with code: $ExitCode"
-        
-        # Метод 2: Для .pcwex пробуем открыть через распакованную версию
+        Write-Log "IDE exited immediately. Exit code: $($Process.ExitCode)"
+        # Попытка через папку (для .pcwex)
         if ($IsPcwexArchive -and $TempExtractDir -and (Test-Path $TempExtractDir)) {
-            Write-Log "Attempt 2: Opening extracted .pcwex folder"
-            $ExtractedCommand = "`"$AbsIDEPath`" `"$TempExtractDir`""
-            Write-Log "EXECUTE COMMAND: $ExtractedCommand"
-            Write-Log "WORKING DIRECTORY: $(Split-Path $TempExtractDir -Parent)"
-            
-            $Process = Start-Process -FilePath $AbsIDEPath -ArgumentList "`"$TempExtractDir`"" -WorkingDirectory (Split-Path $TempExtractDir -Parent) -PassThru
-            Start-Sleep -Seconds 5
-            
-            if (-not $Process.HasExited) {
-                $Success = $true
-                Write-Log "Successfully opened extracted project folder"
-            }
-        }
-        
-        # Метод 3: Открыть IDE без проекта и предложить открыть вручную
-        if (-not $Success) {
-            Write-Log "Attempt 3: Opening IDE without project"
-            $NoProjectCommand = "`"$AbsIDEPath`""
-            Write-Log "EXECUTE COMMAND: $NoProjectCommand"
-            Write-Log "WORKING DIRECTORY: $WorkingDir"
-            
-            $Process = Start-Process -FilePath $AbsIDEPath -WorkingDirectory $WorkingDir -PassThru
-            Start-Sleep -Seconds 3
-            
-            if (-not $Process.HasExited) {
-                Write-Log "IDE opened without project. Please open the project manually: $LaunchPath"
-                $Success = $true
-            }
+            Write-Log "Trying to open extracted folder: $TempExtractDir"
+            Start-Process -FilePath $AbsIDEPath -ArgumentList "`"$TempExtractDir`"" -WorkingDirectory (Split-Path $TempExtractDir -Parent)
         }
     } else {
-        $Success = $true
-        Write-Log "IDE launched successfully (PID: $($Process.Id))" 
-    }
-    
-    if (-not $Success) {
-        Write-Log "Error: All opening methods failed"
-        Write-Host "Unable to open project. Possible reasons:" -ForegroundColor Red
-        Write-Host "1. Project file may be corrupted" -ForegroundColor Yellow
-        Write-Host "2. Version mismatch between project and IDE" -ForegroundColor Yellow
-        Write-Host "3. Insufficient permissions" -ForegroundColor Yellow
-        Write-Host "4. Project requires newer version of PLCnext Engineer" -ForegroundColor Yellow
-        Write-Host "" -ForegroundColor Yellow
-        Write-Host "Last attempted command:" -ForegroundColor Yellow
-        Write-Host "  $LaunchCommand" -ForegroundColor White
-        Write-Host "  Working directory: $WorkingDir" -ForegroundColor White
+        Write-Log "IDE launched successfully (PID: $($Process.Id))"
     }
     
 } catch {
     Write-Log "Error launching IDE: $($_.Exception.Message)"
-    Write-Host "Failed to execute command: $LaunchCommand" -ForegroundColor Red
+    Write-Host "Failed to launch IDE." -ForegroundColor Red
 }
 
 # ---------------- Очистка временной распаковки ----------------
 if ($TempExtractDir -and (Test-Path $TempExtractDir) -and -not $KeepExtracted) {
     try { 
-        # Даем IDE время запуститься перед очисткой
         Start-Sleep -Seconds 10
-        if ($Process -and -not $Process.HasExited) {
-            Write-Log "IDE is still running, keeping temporary files"
-            Write-Host "Temporary files kept at: $TempExtractDir" -ForegroundColor Yellow
+        if (Get-Process | Where-Object { $_.Name -match 'PLCNENG64|PLCnextEngineer' } -ErrorAction SilentlyContinue) {
+            Write-Log "IDE is running — keeping temp files"
+            Write-Host "Temporary files: $TempExtractDir" -ForegroundColor Yellow
         } else {
             Remove-Item -Path $TempExtractDir -Recurse -Force -ErrorAction SilentlyContinue
             Write-Log "Temporary extraction removed: $TempExtractDir" 
@@ -512,6 +491,12 @@ if ($TempExtractDir -and (Test-Path $TempExtractDir) -and -not $KeepExtracted) {
 }
 
 Write-Log "Script execution completed. Log: $LogFile"
+# SIG # Begin signature block
+
+
+
+
+
 # SIG # Begin signature block
 # MIIFsAYJKoZIhvcNAQcCoIIFoTCCBZ0CAQExDzANBglghkgBZQMEAgEFADB5Bgor
 # BgEEAYI3AgEEoGswaTA0BgorBgEEAYI3AgEeMCYCAwEAAAQQH8w7YFlLCE63JNLG
